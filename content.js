@@ -21,8 +21,8 @@ const ALLOWED_STATE_KEYS = [
 
 let isTotalsDisabledByProf = false;
 let courseId = 'default';
-let customWeights = {}; // Saved per-course in localStorage
-let customDrops = {};   // Saved per-course in localStorage (number of lowest scores to drop per category)
+let customWeights = {};
+let customDrops = {};
 let lastScoreSignature = '';
 
 function initGradeFocus() {
@@ -353,6 +353,14 @@ function injectStyles() {
       color: #001e44 !important;
       padding: 12px 8px !important;
     }
+    .cgf-minmax-row {
+      font-size: 12px;
+      font-weight: 600;
+      color: #4b5563;
+      margin-top: 4px;
+      display: flex;
+      gap: 16px;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -657,7 +665,6 @@ function parseAssignmentRow(row) {
   };
 }
 
-// Returns a Set of row elements that should be dropped based on customDrops per category
 function getDroppedRowsSet(onlyGraded) {
   const droppedRows = new Set();
   if (!isTotalsDisabledByProf || !state.calcTotals) return droppedRows;
@@ -687,13 +694,11 @@ function getDroppedRowsSet(onlyGraded) {
     if (dropCount <= 0) return;
 
     const list = byCat[cat];
-    // Sort by lowest percentage ratio first; tie-break by largest points lost
     list.sort((a, b) => {
       if (Math.abs(a.ratio - b.ratio) > 1e-9) return a.ratio - b.ratio;
       return (b.possible - b.earned) - (a.possible - a.earned);
     });
 
-    // Keep at least 1 assignment in the category if possible, or drop up to dropCount
     const actualDrops = Math.min(dropCount, list.length);
     for (let i = 0; i < actualDrops; i++) {
       droppedRows.add(list[i].row);
@@ -701,6 +706,81 @@ function getDroppedRowsSet(onlyGraded) {
   });
 
   return droppedRows;
+}
+
+function calculateGradeForScenario(scenarioType, onlyGraded, droppedRows) {
+  const catTotals = {};
+  getCourseCategories().forEach(cat => {
+    catTotals[cat] = { earned: 0, possible: 0 };
+  });
+
+  getAssignmentRows().forEach(row => {
+    const data = parseAssignmentRow(row);
+    if (!data.category || data.isExempt) return;
+    if (!catTotals[data.category]) {
+      catTotals[data.category] = { earned: 0, possible: 0 };
+    }
+
+    if (droppedRows.has(row)) return;
+
+    if (data.isGraded && !isNaN(data.pointsPossible)) {
+      catTotals[data.category].earned += data.rawScore;
+      catTotals[data.category].possible += data.pointsPossible;
+    } else if (data.isUngraded && !isNaN(data.pointsPossible)) {
+      if (scenarioType === 'current') {
+        if (!onlyGraded) {
+          catTotals[data.category].possible += data.pointsPossible;
+        }
+      } else if (scenarioType === 'max') {
+        catTotals[data.category].earned += data.pointsPossible; // assume 100%
+        catTotals[data.category].possible += data.pointsPossible;
+      } else if (scenarioType === 'min') {
+        catTotals[data.category].possible += data.pointsPossible; // assume 0% earned
+      }
+    }
+  });
+
+  let totalWeightEntered = 0;
+  Object.values(customWeights).forEach(w => {
+    if (Number.isFinite(w) && w > 0) totalWeightEntered += w;
+  });
+
+  let finalPercentage = null;
+  let totalEarnedAll = 0;
+  let totalPossibleAll = 0;
+
+  Object.values(catTotals).forEach(st => {
+    totalEarnedAll += st.earned;
+    totalPossibleAll += st.possible;
+  });
+
+  if (totalWeightEntered > 0) {
+    let weightedEarned = 0;
+    let activeWeightDenominator = 0;
+
+    Object.keys(catTotals).forEach(cat => {
+      const w = customWeights[cat] || 0;
+      const st = catTotals[cat];
+      if (w > 0 && st && st.possible > 0) {
+        const catRatio = st.earned / st.possible;
+        weightedEarned += catRatio * w;
+        activeWeightDenominator += w;
+      }
+    });
+
+    if (activeWeightDenominator > 0) {
+      const baseDenominator = totalWeightEntered > 100
+        ? Math.min(100, activeWeightDenominator)
+        : activeWeightDenominator;
+      finalPercentage = (weightedEarned / baseDenominator) * 100;
+    }
+  } else {
+    if (totalPossibleAll > 0) {
+      finalPercentage = (totalEarnedAll / totalPossibleAll) * 100;
+    }
+  }
+
+  return { finalPercentage, totalEarnedAll, totalPossibleAll, catTotals };
 }
 
 function updateDisabledTotalsCalculation() {
@@ -717,30 +797,11 @@ function updateDisabledTotalsCalculation() {
   const onlyGraded = onlyGradedEl ? onlyGradedEl.checked : true;
   const droppedRows = getDroppedRowsSet(onlyGraded);
 
-  const catTotals = {};
-  getCourseCategories().forEach(cat => {
-    catTotals[cat] = { earned: 0, possible: 0, droppedCount: 0 };
-  });
+  const currentRes = calculateGradeForScenario('current', onlyGraded, droppedRows);
+  const maxRes = calculateGradeForScenario('max', onlyGraded, droppedRows);
+  const minRes = calculateGradeForScenario('min', onlyGraded, droppedRows);
 
-  getAssignmentRows().forEach(row => {
-    const data = parseAssignmentRow(row);
-    if (!data.category || data.isExempt) return;
-    if (!catTotals[data.category]) {
-      catTotals[data.category] = { earned: 0, possible: 0, droppedCount: 0 };
-    }
-
-    if (droppedRows.has(row)) {
-      catTotals[data.category].droppedCount += 1;
-      return;
-    }
-
-    if (data.isGraded && !isNaN(data.pointsPossible)) {
-      catTotals[data.category].earned += data.rawScore;
-      catTotals[data.category].possible += data.pointsPossible;
-    } else if (!onlyGraded && data.isUngraded && !isNaN(data.pointsPossible)) {
-      catTotals[data.category].possible += data.pointsPossible;
-    }
-  });
+  const catTotals = currentRes.catTotals;
 
   let totalWeightEntered = 0;
   Object.values(customWeights).forEach(w => {
@@ -779,7 +840,7 @@ function updateDisabledTotalsCalculation() {
       row.dataset.cgfCatName = catName;
     }
 
-    const stats = catTotals[catName] || { earned: 0, possible: 0, droppedCount: 0 };
+    const stats = catTotals[catName] || { earned: 0, possible: 0 };
     const catWeight = customWeights[catName];
     const hasPct = stats.possible > 0;
     const catPct = hasPct ? (stats.earned / stats.possible) * 100 : null;
@@ -791,10 +852,11 @@ function updateDisabledTotalsCalculation() {
       weightTag.textContent = `Weight: ${catWeight}%`;
       titleTh.appendChild(weightTag);
     }
-    if (stats.droppedCount > 0) {
+    const dropCount = customDrops[catName] || 0;
+    if (dropCount > 0) {
       const dropTag = document.createElement('span');
       dropTag.className = 'cgf-inline-weight-tag';
-      dropTag.textContent = `Dropped: ${stats.droppedCount}`;
+      dropTag.textContent = `Dropped: ${dropCount}`;
       titleTh.appendChild(dropTag);
     }
 
@@ -822,43 +884,6 @@ function updateDisabledTotalsCalculation() {
       detailsTd.appendChild(ptsSpan);
     }
   });
-
-  let finalPercentage = null;
-  let unscaledWeightedPct = null;
-  let activeWeightDenominator = 0;
-  let totalEarnedAll = 0;
-  let totalPossibleAll = 0;
-
-  Object.values(catTotals).forEach(st => {
-    totalEarnedAll += st.earned;
-    totalPossibleAll += st.possible;
-  });
-
-  if (totalWeightEntered > 0) {
-    let weightedEarned = 0;
-
-    Object.keys(catTotals).forEach(cat => {
-      const w = customWeights[cat] || 0;
-      const st = catTotals[cat];
-      if (w > 0 && st && st.possible > 0) {
-        const catRatio = st.earned / st.possible;
-        weightedEarned += catRatio * w;
-        activeWeightDenominator += w;
-      }
-    });
-
-    if (activeWeightDenominator > 0) {
-      const baseDenominator = totalWeightEntered > 100
-        ? Math.min(100, activeWeightDenominator)
-        : activeWeightDenominator;
-      finalPercentage = (weightedEarned / baseDenominator) * 100;
-      unscaledWeightedPct = weightedEarned;
-    }
-  } else {
-    if (totalPossibleAll > 0) {
-      finalPercentage = (totalEarnedAll / totalPossibleAll) * 100;
-    }
-  }
 
   let finalRow = document.getElementById('cgf-custom-final-row');
   const tbody = document.querySelector('#grades_summary tbody') || document.querySelector('#grades_summary');
@@ -899,21 +924,21 @@ function updateDisabledTotalsCalculation() {
       overNote.style.marginTop = '2px';
       overNote.textContent = `* Note: Total weights exceed 100% (${totalWeightEntered.toFixed(1)}%) — extra credit included`;
       th.appendChild(overNote);
-    } else if (totalWeightEntered > 0 && activeWeightDenominator > 0 && activeWeightDenominator < 100 && unscaledWeightedPct !== null) {
-      const partialNote = document.createElement('div');
-      partialNote.style.fontSize = '11px';
-      partialNote.style.color = '#556572';
-      partialNote.style.fontWeight = '600';
-      partialNote.style.marginTop = '2px';
-      partialNote.textContent = `Scaled from ${activeWeightDenominator.toFixed(1)}% active weight (${unscaledWeightedPct.toFixed(2)}% raw banked syllabus points)`;
-      th.appendChild(partialNote);
     }
+
+    // Min / Max projection sub-line
+    const minMaxDiv = document.createElement('div');
+    minMaxDiv.className = 'cgf-minmax-row';
+    const maxValStr = maxRes.finalPercentage !== null ? `${maxRes.finalPercentage.toFixed(2)}%` : 'N/A';
+    const minValStr = minRes.finalPercentage !== null ? `${minRes.finalPercentage.toFixed(2)}%` : 'N/A';
+    minMaxDiv.innerHTML = `<span>Max Possible Grade: <strong>${maxValStr}</strong> (assuming 100% on remaining)</span><span>Min Possible Grade: <strong>${minValStr}</strong> (assuming 0% on remaining)</span>`;
+    th.appendChild(minMaxDiv);
 
     const scoreTd = document.createElement('td');
     scoreTd.className = 'assignment_score';
     const gradeSpan = document.createElement('span');
     gradeSpan.className = 'grade';
-    gradeSpan.textContent = finalPercentage !== null ? `${finalPercentage.toFixed(2)}%` : 'N/A';
+    gradeSpan.textContent = currentRes.finalPercentage !== null ? `${currentRes.finalPercentage.toFixed(2)}%` : 'N/A';
     scoreTd.appendChild(gradeSpan);
 
     const detailsTd = document.createElement('td');
@@ -922,9 +947,7 @@ function updateDisabledTotalsCalculation() {
     const detailsSpan = document.createElement('span');
     detailsSpan.style.fontSize = '13px';
     detailsSpan.style.color = '#2d3b45';
-    detailsSpan.textContent = totalWeightEntered > 0
-      ? `${totalEarnedAll.toFixed(2)} / ${totalPossibleAll.toFixed(2)} raw pts`
-      : `${totalEarnedAll.toFixed(2)} / ${totalPossibleAll.toFixed(2)} pts`;
+    detailsSpan.textContent = `${currentRes.totalEarnedAll.toFixed(2)} / ${currentRes.totalPossibleAll.toFixed(2)} pts`;
     detailsTd.appendChild(detailsSpan);
 
     finalRow.appendChild(th);
@@ -943,7 +966,6 @@ function restoreOriginalSummaryRows() {
   if (customFinal) customFinal.remove();
 }
 
-// 5. Calculate True Grade Impact Badges (Scaled to Active Weight so they sum to exact points off 100%!)
 function calculateAndInjectBadges() {
   document.querySelectorAll('.cgf-impact-badge, .cgf-dropped-badge, .cgf-whatif-btn').forEach(el => el.remove());
 
@@ -991,7 +1013,6 @@ function calculateAndInjectBadges() {
     return { row, data, isDropped };
   });
 
-  // Calculate active weight denominator (e.g. 50% when Exam 2 & Final Exam are ungraded)
   let totalWeightConfigured = 0;
   let activeWeightDenominator = 0;
   Object.keys(weights).forEach(cat => {
@@ -1030,7 +1051,6 @@ function calculateAndInjectBadges() {
     badge.className = 'cgf-impact-badge';
 
     if (groupWeight && totalGroupPts > 0 && scaleDenominator > 0) {
-      // Scaled impact on your displayed course grade (so Midterm = -14.40% and Problem Set 2 = -0.45% -> 85.15%!)
       const rawSyllabusImpact = (pointsLost / totalGroupPts) * groupWeight;
       const currentGradeImpact = (rawSyllabusImpact / scaleDenominator) * 100;
       badge.textContent = `-${currentGradeImpact.toFixed(2)}% overall grade impact (-${pointsLost} pts)`;
