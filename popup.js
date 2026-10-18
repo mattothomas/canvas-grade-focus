@@ -1,4 +1,4 @@
-const keys = ['hidePerfect', 'hideUngraded', 'hideGraded', 'dimMode'];
+const keys = ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode'];
 
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const activeTab = tabs[0];
@@ -7,13 +7,11 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     return;
   }
 
-  // Load current state from the page
   chrome.tabs.sendMessage(activeTab.id, { type: 'GET_STATE' }, (res) => {
     if (chrome.runtime.lastError || !res) return;
     syncPopupUI(res.state);
   });
 
-  // Send updates to the page immediately when clicked
   keys.forEach(key => {
     document.getElementById(`pop-${key}`).addEventListener('change', (e) => {
       const update = { [key]: e.target.checked };
