@@ -23,6 +23,7 @@ let isTotalsDisabledByProf = false;
 let courseId = 'default';
 let customWeights = {};
 let customDrops = {};
+let targetGradeValue = 90; // Default target
 let lastScoreSignature = '';
 
 function initGradeFocus() {
@@ -77,12 +78,23 @@ function loadValidatedSettings() {
   } catch (e) {
     customDrops = {};
   }
+
+  try {
+    const rawTarget = localStorage.getItem(`cgf_target_${courseId}`);
+    if (rawTarget !== null) {
+      const val = parseFloat(rawTarget);
+      if (Number.isFinite(val) && val >= 0 && val <= 200) {
+        targetGradeValue = val;
+      }
+    }
+  } catch (e) {}
 }
 
 function saveValidatedSettings() {
   try {
     localStorage.setItem(`cgf_weights_${courseId}`, JSON.stringify(customWeights));
     localStorage.setItem(`cgf_drops_${courseId}`, JSON.stringify(customDrops));
+    localStorage.setItem(`cgf_target_${courseId}`, String(targetGradeValue));
   } catch (e) {}
 }
 
@@ -359,7 +371,28 @@ function injectStyles() {
       color: #4b5563;
       margin-top: 4px;
       display: flex;
+      flex-wrap: wrap;
       gap: 16px;
+    }
+    .cgf-target-row {
+      font-size: 12px;
+      font-weight: 600;
+      color: #1e3a8a;
+      margin-top: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .cgf-target-input {
+      width: 54px;
+      padding: 2px 6px;
+      border: 1px solid #99a3ad;
+      border-radius: 4px;
+      font-size: 12px;
+      text-align: right;
+      font-weight: 700;
+      color: #001e44;
     }
   `;
   document.head.appendChild(style);
@@ -732,10 +765,10 @@ function calculateGradeForScenario(scenarioType, onlyGraded, droppedRows) {
           catTotals[data.category].possible += data.pointsPossible;
         }
       } else if (scenarioType === 'max') {
-        catTotals[data.category].earned += data.pointsPossible; // assume 100%
+        catTotals[data.category].earned += data.pointsPossible;
         catTotals[data.category].possible += data.pointsPossible;
       } else if (scenarioType === 'min') {
-        catTotals[data.category].possible += data.pointsPossible; // assume 0% earned
+        catTotals[data.category].possible += data.pointsPossible;
       }
     }
   });
@@ -933,6 +966,78 @@ function updateDisabledTotalsCalculation() {
     const minValStr = minRes.finalPercentage !== null ? `${minRes.finalPercentage.toFixed(2)}%` : 'N/A';
     minMaxDiv.innerHTML = `<span>Max Possible Grade: <strong>${maxValStr}</strong> (assuming 100% on remaining)</span><span>Min Possible Grade: <strong>${minValStr}</strong> (assuming 0% on remaining)</span>`;
     th.appendChild(minMaxDiv);
+
+    // Target Grade Calculator Row
+    const targetDiv = document.createElement('div');
+    targetDiv.className = 'cgf-target-row';
+
+    const targetLabel = document.createElement('span');
+    targetLabel.textContent = 'Target Final Grade:';
+
+    const targetInput = document.createElement('input');
+    targetInput.type = 'number';
+    targetInput.step = 'any';
+    targetInput.min = '0';
+    targetInput.max = '200';
+    targetInput.className = 'cgf-target-input';
+    targetInput.value = targetGradeValue;
+
+    const targetResultSpan = document.createElement('span');
+    targetResultSpan.style.marginLeft = '6px';
+    targetResultSpan.style.fontWeight = '600';
+
+    // Calculate required score on remaining ungraded categories to hit target
+    if (totalWeightEntered > 0) {
+      let currentWeightedBanked = 0;
+      let remainingWeightTotal = 0;
+
+      Object.keys(customWeights).forEach(cat => {
+        const w = customWeights[cat] || 0;
+        const st = catTotals[cat];
+        if (w > 0 && st && st.possible > 0) {
+          const catRatio = st.earned / st.possible;
+          currentWeightedBanked += catRatio * w;
+        }
+        // Check if category has ungraded assignments or 0 possible points
+        const hasUngraded = getAssignmentRows().some(r => {
+          const d = parseAssignmentRow(r);
+          return d.category === cat && d.isUngraded && !droppedRows.has(r);
+        });
+        if (w > 0 && (hasUngraded || st.possible === 0)) {
+          remainingWeightTotal += w;
+        }
+      });
+
+      const neededWeightedPoints = targetGradeValue - currentWeightedBanked;
+      if (maxRes.finalPercentage !== null && targetGradeValue > maxRes.finalPercentage) {
+        targetResultSpan.style.color = '#b91c1c';
+        targetResultSpan.textContent = `(Target is unreachable! Max possible grade is ${maxRes.finalPercentage.toFixed(2)}%)`;
+      } else if (remainingWeightTotal <= 0) {
+        targetResultSpan.style.color = '#047857';
+        targetResultSpan.textContent = `(All graded/completed — final grade is locked at ${currentRes.finalPercentage.toFixed(2)}%)`;
+      } else {
+        const requiredRemainingPct = (neededWeightedPoints / remainingWeightTotal) * 100;
+        targetResultSpan.style.color = '#1e3a8a';
+        targetResultSpan.textContent = `-> You need an average of ${requiredRemainingPct.toFixed(2)}% across remaining ungraded categories (${remainingWeightTotal}% weight) to hit your target.`;
+      }
+    } else {
+      targetResultSpan.textContent = `(Enable weighted category percentages above to use target calculator)`;
+    }
+
+    targetInput.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      if (Number.isFinite(val)) {
+        targetGradeValue = val;
+        saveValidatedSettings();
+        updateDisabledTotalsCalculation();
+      }
+    });
+
+    targetDiv.appendChild(targetLabel);
+    targetDiv.appendChild(targetInput);
+    targetDiv.appendChild(document.createTextNode('% '));
+    targetDiv.appendChild(targetResultSpan);
+    th.appendChild(targetDiv);
 
     const scoreTd = document.createElement('td');
     scoreTd.className = 'assignment_score';
