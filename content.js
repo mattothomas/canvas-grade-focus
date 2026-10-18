@@ -1,8 +1,9 @@
 // Default state: Always starts OFF on every page load/refresh
 let state = {
-  hidePerfect: false,   // Hides >= 100%, EX, and 0/0
-  hideUngraded: false,  // Hides - / 100 (ungraded/future)
-  hideGraded: false,    // Hides all graded (To-Do mode)
+  hidePerfect: false,   // Hides >= 100%, EX, and 0/0 assignments
+  hideUngraded: false,  // Hides - / 100 (ungraded/future) assignments
+  hideGraded: false,    // Hides all graded assignments (To-Do mode)
+  hideTotals: false,    // Separate toggle for the Category & Final Totals at the bottom
   dimMode: false        // False = completely hide row, True = fade to 15% opacity
 };
 
@@ -14,6 +15,32 @@ function initGradeFocus() {
   injectControlBar(gradesTable);
   calculateAndInjectBadges();
   applyFilters();
+}
+
+// Helper: Check if a row is one of the bottom Category Totals or Final Grade rows
+function isSummaryRow(row) {
+  if (
+    row.classList.contains('group_total') ||
+    row.classList.contains('final_grade') ||
+    row.classList.contains('hard_coded')
+  ) {
+    return true;
+  }
+  // Fallback check: real assignments always have an <a href="..."> link in th.title or an id starting with submission_
+  const hasAssignmentLink = !!row.querySelector('th.title a');
+  return !hasAssignmentLink;
+}
+
+// Get only actual assignment rows (excludes Exam 1, Exam 2, Quizzes, Total summary rows at bottom)
+function getAssignmentRows() {
+  const allRows = Array.from(document.querySelectorAll('#grades_summary tr.student_assignment'));
+  return allRows.filter(row => !isSummaryRow(row));
+}
+
+// Get only the bottom summary/total rows
+function getSummaryRows() {
+  const allRows = Array.from(document.querySelectorAll('#grades_summary tr.student_assignment, #grades_summary tr.group_total, #grades_summary tr.final_grade'));
+  return Array.from(new Set(allRows)).filter(row => isSummaryRow(row));
 }
 
 // 1. Inject CSS for clean UI, badges, and hiding/dimming rows
@@ -48,7 +75,7 @@ function injectStyles() {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
     }
     .cgf-pill {
       display: inline-flex;
@@ -58,7 +85,7 @@ function injectStyles() {
       border: 1px solid #c7cdd1;
       border-radius: 20px;
       padding: 5px 12px;
-      font-size: 13px;
+      font-size: 12.5px;
       cursor: pointer;
       user-select: none;
       transition: all 0.15s ease;
@@ -106,8 +133,8 @@ function injectStyles() {
     }
     .cgf-whatif-btn {
       display: inline-block;
-      margin-left: 6px;
-      padding: 1px 6px;
+      margin-top: 4px;
+      padding: 2px 6px;
       font-size: 11px;
       font-weight: 600;
       color: #0066cc;
@@ -115,7 +142,6 @@ function injectStyles() {
       border: 1px solid #99ccff;
       border-radius: 4px;
       cursor: pointer;
-      vertical-align: middle;
     }
     .cgf-whatif-btn:hover {
       background: #cce5ff;
@@ -158,6 +184,9 @@ function injectControlBar(gradesTable) {
       <label class="cgf-pill" id="pill-hideGraded" title="To-Do Mode: Shows ONLY ungraded assignments">
         <input type="checkbox" id="cb-hideGraded"> To-Do Only (Hide Graded)
       </label>
+      <label class="cgf-pill" id="pill-hideTotals" title="Separately hide or show the category & final grade totals at the bottom">
+        <input type="checkbox" id="cb-hideTotals"> Hide Bottom Totals
+      </label>
       <label class="cgf-pill" id="pill-dimMode" title="Fade filtered rows to 15% opacity instead of removing them">
         <input type="checkbox" id="cb-dimMode"> Dim Instead of Hide
       </label>
@@ -169,12 +198,11 @@ function injectControlBar(gradesTable) {
 
   gradesTable.parentNode.insertBefore(bar, gradesTable);
 
-  // Wire up checkbox events
-  ['hidePerfect', 'hideUngraded', 'hideGraded', 'dimMode'].forEach(key => {
+  const keys = ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode'];
+  keys.forEach(key => {
     const cb = document.getElementById(`cb-${key}`);
     cb.addEventListener('change', (e) => {
       state[key] = e.target.checked;
-      // Make hideUngraded and hideGraded mutually exclusive so you don't accidentally hide everything
       if (key === 'hideUngraded' && state.hideUngraded && state.hideGraded) {
         state.hideGraded = false;
       } else if (key === 'hideGraded' && state.hideGraded && state.hideUngraded) {
@@ -185,7 +213,6 @@ function injectControlBar(gradesTable) {
     });
   });
 
-  // Wire up Reset What-If button
   document.getElementById('cgf-reset-whatif').addEventListener('click', () => {
     const revertLinks = document.querySelectorAll('a.revert_score_link');
     if (revertLinks.length > 0) {
@@ -197,7 +224,7 @@ function injectControlBar(gradesTable) {
 }
 
 function syncUI() {
-  ['hidePerfect', 'hideUngraded', 'hideGraded', 'dimMode'].forEach(key => {
+  ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode'].forEach(key => {
     const cb = document.getElementById(`cb-${key}`);
     const pill = document.getElementById(`pill-${key}`);
     if (cb && pill) {
@@ -207,19 +234,16 @@ function syncUI() {
   });
 }
 
-// 3. Parse every assignment row to determine its exact status & score
+// 3. Accurately parse earned score AND possible points from Canvas's HTML
 function parseAssignmentRow(row) {
   const statusEl = row.querySelector('.submission_status');
-  const origPointsEl = row.querySelector('.original_points');
-  const origScoreEl = row.querySelector('.original_score');
   const gradeEl = row.querySelector('.grade');
+  const tooltipEl = row.querySelector('.score_holder .tooltip');
   const contextEl = row.querySelector('.context');
 
   const statusText = statusEl ? statusEl.textContent.trim().toLowerCase() : '';
-  const pointsPossible = origPointsEl ? parseFloat(origPointsEl.textContent.trim()) : NaN;
-  const rawScore = origScoreEl ? parseFloat(origScoreEl.textContent.trim()) : NaN;
 
-  // Detect visible grade text (in case of EX or What-If edits)
+  // 1) Extract visible grade text (e.g. "96", "64", "10", "EX", "-")
   let visibleGradeText = '';
   if (gradeEl) {
     const clone = gradeEl.cloneNode(true);
@@ -227,14 +251,50 @@ function parseAssignmentRow(row) {
     visibleGradeText = clone.textContent.trim().toUpperCase();
   }
 
-  const isExempt = statusText === 'excused' || visibleGradeText === 'EX' || visibleGradeText.includes('EXEMPT');
-  const isZeroPoints = (pointsPossible === 0);
-  const isGraded = !isNaN(rawScore) && statusText !== 'unsubmitted' && visibleGradeText !== '-';
-  const isUngraded = !isExempt && !isZeroPoints && (isNaN(rawScore) || visibleGradeText === '-' || visibleGradeText === '');
+  // 2) Extract possible points from the "/ 100" span right inside .tooltip
+  let pointsPossible = NaN;
+  if (tooltipEl) {
+    // Match "/ 100" or "/ 10.0" at the end of the score cell
+    const match = tooltipEl.textContent.match(/\/\s*([0-9]+(?:\.[0-9]+)?)/);
+    if (match) {
+      pointsPossible = parseFloat(match[1]);
+    }
+  }
 
-  // Perfect or Extra Credit (>= 100%), OR Exempt, OR 0/0 assignment
-  const isPerfectOrExempt = isExempt || isZeroPoints || (isGraded && pointsPossible > 0 && rawScore >= pointsPossible);
-  const isImperfectGraded = isGraded && pointsPossible > 0 && rawScore < pointsPossible && !isExempt;
+  // 3) Extract earned score (prefer visible grade number, fallback to .original_score)
+  let rawScore = parseFloat(visibleGradeText);
+  if (isNaN(rawScore)) {
+    const origScoreEl = row.querySelector('.original_score');
+    const origScoreText = origScoreEl ? origScoreEl.textContent.trim() : '';
+    if (origScoreText !== '') {
+      rawScore = parseFloat(origScoreText);
+    }
+  }
+
+  const isExempt =
+    statusText === 'excused' ||
+    visibleGradeText === 'EX' ||
+    visibleGradeText.includes('EXEMPT');
+
+  const isZeroPoints = (pointsPossible === 0);
+
+  const isUngraded =
+    !isExempt &&
+    (visibleGradeText === '-' || visibleGradeText === '' || isNaN(rawScore));
+
+  const isGraded = !isExempt && !isUngraded && !isNaN(rawScore);
+
+  // Perfect or Extra Credit (>= 100%), OR Exempt (EX), OR 0/0 assignment
+  const isPerfectOrExempt =
+    isExempt ||
+    isZeroPoints ||
+    (isGraded && pointsPossible > 0 && rawScore >= pointsPossible);
+
+  // Imperfect graded assignment (e.g. 96/100 or 64/100)
+  const isImperfectGraded =
+    isGraded &&
+    pointsPossible > 0 &&
+    rawScore < pointsPossible;
 
   const category = contextEl ? contextEl.textContent.trim() : '';
 
@@ -255,7 +315,7 @@ function parseAssignmentRow(row) {
 function calculateAndInjectBadges() {
   // Parse category weights from the right-hand sidebar table
   const weights = {};
-  const weightRows = document.querySelectorAll('#assignments-not-weighted tbody tr, aside table.summary tbody tr');
+  const weightRows = document.querySelectorAll('aside table.summary tbody tr, #assignments-not-weighted tbody tr');
   weightRows.forEach(tr => {
     const th = tr.querySelector('th');
     const td = tr.querySelector('td');
@@ -268,11 +328,10 @@ function calculateAndInjectBadges() {
     }
   });
 
-  // Sum total graded points per category so we know each assignment's share of its category
-  const rows = Array.from(document.querySelectorAll('tr.student_assignment'));
+  const assignmentRows = getAssignmentRows();
   const categoryGradedPoints = {};
 
-  const parsedRows = rows.map(row => {
+  const parsedRows = assignmentRows.map(row => {
     const data = parseAssignmentRow(row);
     if (data.isGraded && !data.isExempt && data.pointsPossible > 0 && data.category) {
       categoryGradedPoints[data.category] = (categoryGradedPoints[data.category] || 0) + data.pointsPossible;
@@ -280,15 +339,14 @@ function calculateAndInjectBadges() {
     return { row, data };
   });
 
-  // Add impact badges and quick What-If buttons to imperfect assignments
   parsedRows.forEach(({ row, data }) => {
     if (!data.isImperfectGraded) return;
 
-    const pointsLost = data.pointsPossible - data.rawScore;
+    const pointsLost = +(data.pointsPossible - data.rawScore).toFixed(2);
     const titleCell = row.querySelector('th.title');
     const scoreHolder = row.querySelector('.score_holder');
 
-    // A) Inject True Course Grade Impact Badge
+    // A) Inject True Course Grade Impact Badge under the assignment title
     const groupWeight = weights[data.category];
     const totalGroupPts = categoryGradedPoints[data.category];
 
@@ -297,30 +355,29 @@ function calculateAndInjectBadges() {
       badge.className = 'cgf-impact-badge';
 
       if (groupWeight && totalGroupPts > 0) {
-        // Formula: (Points Lost / Total Graded Points in Category) * Category Weight %
         const courseImpact = (pointsLost / totalGroupPts) * groupWeight;
-        badge.textContent = `📉 -${courseImpact.toFixed(2)}% overall grade impact (${pointsLost} pts lost)`;
+        badge.textContent = `📉 -${courseImpact.toFixed(2)}% overall grade impact (-${pointsLost} pts)`;
       } else {
         badge.textContent = `📉 -${pointsLost} pts lost`;
       }
       titleCell.appendChild(badge);
     }
 
-    // B) Inject One-Click "Test 100%" What-If Button
+    // B) Inject One-Click "Test 100%" What-If Button under the score
     if (scoreHolder && !scoreHolder.querySelector('.cgf-whatif-btn')) {
       const btn = document.createElement('button');
       btn.className = 'cgf-whatif-btn';
       btn.type = 'button';
-      btn.title = `Test What-If Score: ${data.pointsPossible}/${data.pointsPossible}`;
+      btn.title = `Click to test ${data.pointsPossible}/${data.pointsPossible} What-If score`;
       btn.textContent = `✨ Test ${data.pointsPossible}/${data.pointsPossible}`;
 
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const gradeSpan = row.querySelector('.grade');
         if (gradeSpan) {
-          gradeSpan.click(); // Opens Canvas's native What-If input box
+          gradeSpan.click();
           setTimeout(() => {
-            const input = row.querySelector('input.what_if_score, .score_holder input[type="text"]');
+            const input = row.querySelector('input#student_entered_score, .score_holder input[type="text"]');
             if (input) {
               input.value = data.pointsPossible;
               input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -337,13 +394,16 @@ function calculateAndInjectBadges() {
   });
 }
 
-// 5. Hide or Dim Rows Based on Active Toggles (Leaves Category Totals Untouched!)
+// 5. Hide or Dim Rows Based on Active Toggles
 function applyFilters() {
-  const rows = document.querySelectorAll('tr.student_assignment');
-  let visibleCount = 0;
-  let totalCount = rows.length;
+  const assignmentRows = getAssignmentRows();
+  const summaryRows = getSummaryRows();
 
-  rows.forEach(row => {
+  let visibleCount = 0;
+  const totalCount = assignmentRows.length;
+
+  // Filter individual assignments
+  assignmentRows.forEach(row => {
     const data = parseAssignmentRow(row);
     let shouldFilter = false;
 
@@ -357,10 +417,8 @@ function applyFilters() {
       shouldFilter = true;
     }
 
-    // Reset classes first
     row.classList.remove('cgf-hidden-row', 'cgf-dimmed-row');
 
-    // Also find associated sub-rows (like open score details box plots, comments, or rubrics)
     const submissionId = row.id ? row.id.replace('submission_', '') : null;
     const subRows = submissionId
       ? document.querySelectorAll(`#grade_info_${submissionId}, #rubric_${submissionId}, #comments_thread_${submissionId}`)
@@ -379,13 +437,25 @@ function applyFilters() {
     }
   });
 
+  // Separately filter the bottom Category & Final Totals ONLY if "Hide Bottom Totals" is checked
+  summaryRows.forEach(row => {
+    row.classList.remove('cgf-hidden-row', 'cgf-dimmed-row');
+    if (state.hideTotals) {
+      if (state.dimMode) {
+        row.classList.add('cgf-dimmed-row');
+      } else {
+        row.classList.add('cgf-hidden-row');
+      }
+    }
+  });
+
   const statsEl = document.getElementById('cgf-stats');
   if (statsEl) {
     statsEl.textContent = `(Showing ${visibleCount} of ${totalCount} assignments)`;
   }
 }
 
-// 6. Listen for messages from the Chrome Toolbar Popup (Option B + Option A stay in sync)
+// 6. Sync with Chrome Toolbar Popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'GET_STATE') {
     sendResponse({ state });
@@ -397,5 +467,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// Run when page loads
 initGradeFocus();
