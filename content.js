@@ -1,13 +1,12 @@
 // Default state: All filters start OFF on every page load/refresh.
-// extensionEnabled controls whether the Grade Focus toolbar/UI is visible on the page.
 let state = {
-  extensionEnabled: true, // Master switch in popup to turn the entire extension UI on/off
-  hidePerfect: false,     // Hides >= 100%, EX, and 0/0 assignments
-  hideUngraded: false,    // Hides - / 100 (ungraded/future) assignments
-  hideGraded: false,      // Hides all graded assignments (To-Do mode)
-  hideTotals: false,      // Separate toggle for the Category & Final Totals at the bottom
-  dimMode: false,         // False = completely hide row, True = fade to 15% opacity
-  calcTotals: false       // Appears & calculates totals when professor has disabled them
+  extensionEnabled: true,
+  hidePerfect: false,
+  hideUngraded: false,
+  hideGraded: false,
+  hideTotals: false,
+  dimMode: false,
+  calcTotals: false
 };
 
 const ALLOWED_STATE_KEYS = [
@@ -22,52 +21,68 @@ const ALLOWED_STATE_KEYS = [
 
 let isTotalsDisabledByProf = false;
 let courseId = 'default';
-let customWeights = {}; // Validated & saved per-course in localStorage
+let customWeights = {}; // Saved per-course in localStorage
+let customDrops = {};   // Saved per-course in localStorage (number of lowest scores to drop per category)
 let lastScoreSignature = '';
 
 function initGradeFocus() {
   const gradesTable = document.querySelector('#grades_summary');
   if (!gradesTable || document.getElementById('cgf-control-bar')) return;
 
-  // 1) Extract course ID from URL (e.g. 2476300) so weights save per class
   const match = window.location.pathname.match(/\/courses\/(\d+)/);
   if (match) courseId = match[1];
 
-  // 2) Load & strictly validate saved custom weights for this specific course
-  loadValidatedWeights();
-
-  // 3) Detect if professor explicitly disabled total calculations
+  loadValidatedSettings();
   detectDisabledTotals();
 
-  // 4) Build UI & event listeners (no MutationObserver loop!)
   injectStyles();
   injectControlBar(gradesTable);
   setupWhatIfListeners(gradesTable);
   refreshAll();
 }
 
-function loadValidatedWeights() {
+function loadValidatedSettings() {
   customWeights = {};
+  customDrops = {};
   try {
-    const raw = localStorage.getItem(`cgf_weights_${courseId}`);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      Object.keys(parsed).forEach(key => {
-        const val = Number(parsed[key]);
-        if (typeof key === 'string' && key.length <= 120 && Number.isFinite(val) && val >= 0 && val <= 1000) {
-          customWeights[key] = val;
-        }
-      });
+    const rawWeights = localStorage.getItem(`cgf_weights_${courseId}`);
+    if (rawWeights) {
+      const parsed = JSON.parse(rawWeights);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        Object.keys(parsed).forEach(key => {
+          const val = Number(parsed[key]);
+          if (typeof key === 'string' && key.length <= 120 && Number.isFinite(val) && val >= 0 && val <= 1000) {
+            customWeights[key] = val;
+          }
+        });
+      }
     }
   } catch (e) {
     customWeights = {};
   }
+
+  try {
+    const rawDrops = localStorage.getItem(`cgf_drops_${courseId}`);
+    if (rawDrops) {
+      const parsed = JSON.parse(rawDrops);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        Object.keys(parsed).forEach(key => {
+          const val = parseInt(parsed[key], 10);
+          if (typeof key === 'string' && key.length <= 120 && Number.isFinite(val) && val >= 0 && val <= 100) {
+            customDrops[key] = val;
+          }
+        });
+      }
+    }
+  } catch (e) {
+    customDrops = {};
+  }
 }
 
-function saveValidatedWeights() {
+function saveValidatedSettings() {
   try {
     localStorage.setItem(`cgf_weights_${courseId}`, JSON.stringify(customWeights));
+    localStorage.setItem(`cgf_drops_${courseId}`, JSON.stringify(customDrops));
   } catch (e) {}
 }
 
@@ -82,7 +97,6 @@ function detectDisabledTotals() {
   isTotalsDisabledByProf = hasDisabledText || hasMutedIcons;
 }
 
-// Helper: Check if a row is one of the bottom Category Totals or Final Grade rows
 function isSummaryRow(row) {
   if (
     row.classList.contains('group_total') ||
@@ -110,7 +124,6 @@ function getSummaryRows() {
   return Array.from(new Set(allRows)).filter(row => isSummaryRow(row));
 }
 
-// 1. Inject CSS
 function injectStyles() {
   if (document.getElementById('cgf-styles')) return;
   const style = document.createElement('style');
@@ -214,20 +227,16 @@ function injectStyles() {
       font-weight: 700;
       margin-top: 4px;
     }
-    .cgf-whatif-btn {
+    .cgf-dropped-badge {
       display: inline-block;
-      margin-top: 4px;
+      background: #e5e7eb;
+      color: #374151;
+      border: 1px solid #9ca3af;
+      border-radius: 4px;
       padding: 2px 6px;
       font-size: 11px;
       font-weight: 600;
-      color: #0066cc;
-      background: #e6f2ff;
-      border: 1px solid #99ccff;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    .cgf-whatif-btn:hover {
-      background: #cce5ff;
+      margin-top: 4px;
     }
     .cgf-hidden-row {
       display: none !important;
@@ -244,7 +253,6 @@ function injectStyles() {
       color: #556572;
       font-weight: 600;
     }
-    /* Custom Weight Calculator Panel */
     #cgf-weights-panel {
       border-top: 1px solid #dce1e5;
       padding-top: 10px;
@@ -275,20 +283,39 @@ function injectStyles() {
       background: #fff;
       border: 1px solid #c7cdd1;
       border-radius: 6px;
-      padding: 4px 10px;
+      padding: 6px 10px;
       font-size: 12px;
       font-weight: 600;
       color: #2d3b45;
     }
     .cgf-weight-input {
-      width: 58px;
-      padding: 2px 6px;
+      width: 52px;
+      padding: 2px 5px;
       border: 1px solid #99a3ad;
       border-radius: 4px;
       font-size: 12px;
       text-align: right;
       font-weight: 700;
       color: #001e44;
+    }
+    .cgf-drop-input {
+      width: 42px;
+      padding: 2px 5px;
+      border: 1px solid #99a3ad;
+      border-radius: 4px;
+      font-size: 12px;
+      text-align: right;
+      font-weight: 700;
+      color: #001e44;
+    }
+    .cgf-sep {
+      color: #c7cdd1;
+      margin: 0 2px;
+    }
+    .cgf-sub-label {
+      font-size: 11px;
+      color: #556572;
+      font-weight: 500;
     }
     .cgf-weight-note {
       font-size: 11.5px;
@@ -330,21 +357,20 @@ function injectStyles() {
   document.head.appendChild(style);
 }
 
-// 2. Inject the In-Page Control Bar
 function injectControlBar(gradesTable) {
   const bar = document.createElement('div');
   bar.id = 'cgf-control-bar';
 
   const calcPillHTML = isTotalsDisabledByProf
-    ? `<label class="cgf-pill cgf-calc-pill" id="pill-calcTotals" title="Professor disabled grade totals. Click to calculate category & final totals!">
-         <input type="checkbox" id="cb-calcTotals"> 🧮 Calculate Disabled Totals
+    ? `<label class="cgf-pill cgf-calc-pill" id="pill-calcTotals" title="Professor disabled grade totals. Click to calculate category and final totals.">
+         <input type="checkbox" id="cb-calcTotals"> Calculate Disabled Totals
        </label>`
     : '';
 
   bar.innerHTML = `
     <div class="cgf-top-row">
       <div class="cgf-title">
-        <span>🎯 Grade Focus</span>
+        <span>Grade Focus</span>
         <span id="cgf-stats" class="cgf-stats"></span>
       </div>
       <div class="cgf-controls">
@@ -357,7 +383,7 @@ function injectControlBar(gradesTable) {
         <label class="cgf-pill" id="pill-hideGraded" title="To-Do Mode: Shows ONLY ungraded assignments">
           <input type="checkbox" id="cb-hideGraded"> To-Do Only (Hide Graded)
         </label>
-        <label class="cgf-pill" id="pill-hideTotals" title="Separately hide or show the category & final grade totals at the bottom">
+        <label class="cgf-pill" id="pill-hideTotals" title="Separately hide or show the category and final grade totals at the bottom">
           <input type="checkbox" id="cb-hideTotals"> Hide Bottom Totals
         </label>
         <label class="cgf-pill" id="pill-dimMode" title="Fade filtered rows to 15% opacity instead of removing them">
@@ -365,13 +391,13 @@ function injectControlBar(gradesTable) {
         </label>
         ${calcPillHTML}
         <button class="cgf-btn" id="cgf-reset-whatif" title="Revert any tested What-If scores back to official grades">
-          ↺ Reset What-Ifs
+          Reset What-Ifs
         </button>
       </div>
     </div>
     <div id="cgf-weights-panel">
       <div class="cgf-weights-header">
-        <span>⚖️ Category Weights % (Auto-saved for this class — leave all at 0% for unweighted total points):</span>
+        <span>Category Weights % & Auto-Drop Lowest Scores (Auto-saved for this class — leave weights at 0% for unweighted points):</span>
         <span id="cgf-weights-sum-status" class="cgf-weight-note"></span>
       </div>
       <div class="cgf-weights-grid" id="cgf-weights-grid"></div>
@@ -402,7 +428,6 @@ function injectControlBar(gradesTable) {
       setTimeout(refreshAll, 150);
       setTimeout(refreshAll, 400);
     } else {
-      // Also check Canvas's "Revert to Actual Score" button if present
       const showSavedBtn = document.querySelector('#revert-all-to-actual-score');
       if (showSavedBtn) {
         showSavedBtn.click();
@@ -414,7 +439,6 @@ function injectControlBar(gradesTable) {
   buildWeightsEditor();
 }
 
-// Safely build inputs for each category using DOM APIs (no unsafe innerHTML with category names)
 function buildWeightsEditor() {
   const grid = document.getElementById('cgf-weights-grid');
   if (!grid) return;
@@ -423,28 +447,47 @@ function buildWeightsEditor() {
   grid.textContent = '';
 
   categories.forEach(cat => {
-    const savedVal = customWeights[cat] !== undefined ? String(customWeights[cat]) : '';
+    const savedWeight = customWeights[cat] !== undefined ? String(customWeights[cat]) : '';
+    const savedDrop = customDrops[cat] !== undefined ? String(customDrops[cat]) : '';
 
-    const item = document.createElement('label');
+    const item = document.createElement('div');
     item.className = 'cgf-weight-item';
 
     const nameSpan = document.createElement('span');
     nameSpan.textContent = `${cat}:`;
 
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.step = 'any';
-    input.min = '0';
-    input.max = '1000';
-    input.placeholder = '0';
-    input.className = 'cgf-weight-input';
-    input.dataset.category = cat;
-    input.value = savedVal;
+    const weightInput = document.createElement('input');
+    weightInput.type = 'number';
+    weightInput.step = 'any';
+    weightInput.min = '0';
+    weightInput.max = '1000';
+    weightInput.placeholder = '0';
+    weightInput.className = 'cgf-weight-input';
+    weightInput.title = `Weight percentage for ${cat}`;
+    weightInput.value = savedWeight;
 
     const pctSpan = document.createElement('span');
     pctSpan.textContent = '%';
 
-    input.addEventListener('input', (e) => {
+    const sep = document.createElement('span');
+    sep.className = 'cgf-sep';
+    sep.textContent = '|';
+
+    const dropLabel = document.createElement('span');
+    dropLabel.className = 'cgf-sub-label';
+    dropLabel.textContent = 'Drop lowest:';
+
+    const dropInput = document.createElement('input');
+    dropInput.type = 'number';
+    dropInput.step = '1';
+    dropInput.min = '0';
+    dropInput.max = '99';
+    dropInput.placeholder = '0';
+    dropInput.className = 'cgf-drop-input';
+    dropInput.title = `Number of lowest graded assignments to auto-drop in ${cat}`;
+    dropInput.value = savedDrop;
+
+    weightInput.addEventListener('input', (e) => {
       const rawText = e.target.value.trim();
       const val = parseFloat(rawText);
       if (rawText === '' || !Number.isFinite(val) || val < 0) {
@@ -452,14 +495,30 @@ function buildWeightsEditor() {
       } else {
         customWeights[cat] = Math.min(val, 1000);
       }
-      saveValidatedWeights();
+      saveValidatedSettings();
+      updateDisabledTotalsCalculation();
+      calculateAndInjectBadges();
+    });
+
+    dropInput.addEventListener('input', (e) => {
+      const rawText = e.target.value.trim();
+      const val = parseInt(rawText, 10);
+      if (rawText === '' || !Number.isFinite(val) || val <= 0) {
+        delete customDrops[cat];
+      } else {
+        customDrops[cat] = Math.min(val, 99);
+      }
+      saveValidatedSettings();
       updateDisabledTotalsCalculation();
       calculateAndInjectBadges();
     });
 
     item.appendChild(nameSpan);
-    item.appendChild(input);
+    item.appendChild(weightInput);
     item.appendChild(pctSpan);
+    item.appendChild(sep);
+    item.appendChild(dropLabel);
+    item.appendChild(dropInput);
     grid.appendChild(item);
   });
 }
@@ -480,7 +539,6 @@ function getCourseCategories() {
   return Array.from(cats);
 }
 
-// Compute a lightweight signature of all assignment scores so we only recalculate when a score actually changes
 function getCurrentScoreSignature() {
   return getAssignmentRows()
     .map(row => {
@@ -490,7 +548,6 @@ function getCurrentScoreSignature() {
     .join('|');
 }
 
-// Safe, event-driven listeners for What-If edits (Zero MutationObserver feedback loops!)
 function setupWhatIfListeners(gradesTable) {
   const onlyGradedCheckbox = document.getElementById('only_consider_graded_assignments');
   if (onlyGradedCheckbox) {
@@ -524,7 +581,6 @@ function setupWhatIfListeners(gradesTable) {
   });
 }
 
-// 3. Parse every assignment row (supports live What-If scores!)
 function parseAssignmentRow(row) {
   const statusEl = row.querySelector('.submission_status');
   const gradeEl = row.querySelector('.grade');
@@ -533,7 +589,6 @@ function parseAssignmentRow(row) {
 
   const statusText = statusEl ? statusEl.textContent.trim().toLowerCase() : '';
 
-  // 1) Extract visible grade text (e.g. "0", "50", "44", "EX", "-")
   let visibleGradeText = '';
   if (gradeEl) {
     const clone = gradeEl.cloneNode(true);
@@ -541,7 +596,6 @@ function parseAssignmentRow(row) {
     visibleGradeText = clone.textContent.trim().toUpperCase();
   }
 
-  // 2) Extract possible points from "/ 50" or "/ 100"
   let pointsPossible = NaN;
   if (tooltipEl) {
     const match = tooltipEl.textContent.match(/\/\s*([0-9]+(?:\.[0-9]+)?)/);
@@ -550,7 +604,6 @@ function parseAssignmentRow(row) {
     }
   }
 
-  // 3) Extract current active score (visible What-If score takes priority over original_score)
   let rawScore = parseFloat(visibleGradeText);
   if (isNaN(rawScore) && visibleGradeText !== '-') {
     const whatIfEl = row.querySelector('.student_entered_score');
@@ -604,7 +657,52 @@ function parseAssignmentRow(row) {
   };
 }
 
-// 4. Calculate & Render Bottom Category Totals + Final Grade when Professor Disabled Them
+// Returns a Set of row elements that should be dropped based on customDrops per category
+function getDroppedRowsSet(onlyGraded) {
+  const droppedRows = new Set();
+  if (!isTotalsDisabledByProf || !state.calcTotals) return droppedRows;
+
+  const byCat = {};
+  getAssignmentRows().forEach(row => {
+    const data = parseAssignmentRow(row);
+    if (!data.category || data.isExempt || !(data.pointsPossible > 0)) return;
+
+    const eligible = data.isGraded || (!onlyGraded && data.isUngraded);
+    if (!eligible) return;
+
+    const earned = data.isGraded ? data.rawScore : 0;
+    const ratio = earned / data.pointsPossible;
+
+    if (!byCat[data.category]) byCat[data.category] = [];
+    byCat[data.category].push({
+      row,
+      earned,
+      possible: data.pointsPossible,
+      ratio
+    });
+  });
+
+  Object.keys(byCat).forEach(cat => {
+    const dropCount = customDrops[cat] || 0;
+    if (dropCount <= 0) return;
+
+    const list = byCat[cat];
+    // Sort by lowest percentage ratio first; tie-break by largest points lost
+    list.sort((a, b) => {
+      if (Math.abs(a.ratio - b.ratio) > 1e-9) return a.ratio - b.ratio;
+      return (b.possible - b.earned) - (a.possible - a.earned);
+    });
+
+    // Keep at least 1 assignment in the category if possible, or drop up to dropCount
+    const actualDrops = Math.min(dropCount, list.length);
+    for (let i = 0; i < actualDrops; i++) {
+      droppedRows.add(list[i].row);
+    }
+  });
+
+  return droppedRows;
+}
+
 function updateDisabledTotalsCalculation() {
   const weightsPanel = document.getElementById('cgf-weights-panel');
   if (!state.extensionEnabled || !isTotalsDisabledByProf || !state.calcTotals) {
@@ -617,18 +715,23 @@ function updateDisabledTotalsCalculation() {
 
   const onlyGradedEl = document.getElementById('only_consider_graded_assignments');
   const onlyGraded = onlyGradedEl ? onlyGradedEl.checked : true;
+  const droppedRows = getDroppedRowsSet(onlyGraded);
 
   const catTotals = {};
   getCourseCategories().forEach(cat => {
-    catTotals[cat] = { earned: 0, possible: 0 };
+    catTotals[cat] = { earned: 0, possible: 0, droppedCount: 0 };
   });
 
-  // Sum up earned & possible points per category
   getAssignmentRows().forEach(row => {
     const data = parseAssignmentRow(row);
     if (!data.category || data.isExempt) return;
     if (!catTotals[data.category]) {
-      catTotals[data.category] = { earned: 0, possible: 0 };
+      catTotals[data.category] = { earned: 0, possible: 0, droppedCount: 0 };
+    }
+
+    if (droppedRows.has(row)) {
+      catTotals[data.category].droppedCount += 1;
+      return;
     }
 
     if (data.isGraded && !isNaN(data.pointsPossible)) {
@@ -639,7 +742,6 @@ function updateDisabledTotalsCalculation() {
     }
   });
 
-  // Sum custom weights
   let totalWeightEntered = 0;
   Object.values(customWeights).forEach(w => {
     if (Number.isFinite(w) && w > 0) totalWeightEntered += w;
@@ -652,7 +754,7 @@ function updateDisabledTotalsCalculation() {
       sumStatusEl.textContent = 'Mode: Unweighted (Pure Total Points)';
     } else if (totalWeightEntered > 100) {
       sumStatusEl.className = 'cgf-weight-over100';
-      sumStatusEl.textContent = `* Note: Total weights exceed 100% (${totalWeightEntered.toFixed(1)}%) — extra credit included!`;
+      sumStatusEl.textContent = `* Note: Total weights exceed 100% (${totalWeightEntered.toFixed(1)}%) — extra credit included`;
     } else if (totalWeightEntered < 100) {
       sumStatusEl.className = 'cgf-weight-note';
       sumStatusEl.textContent = `Total Weight Entered: ${totalWeightEntered.toFixed(1)}% (scaled to active categories)`;
@@ -662,7 +764,6 @@ function updateDisabledTotalsCalculation() {
     }
   }
 
-  // Safely update each bottom Category Row using DOM APIs
   const groupRows = document.querySelectorAll('#grades_summary tr.group_total');
   groupRows.forEach(row => {
     const titleTh = row.querySelector('th.title');
@@ -678,18 +779,23 @@ function updateDisabledTotalsCalculation() {
       row.dataset.cgfCatName = catName;
     }
 
-    const stats = catTotals[catName] || { earned: 0, possible: 0 };
+    const stats = catTotals[catName] || { earned: 0, possible: 0, droppedCount: 0 };
     const catWeight = customWeights[catName];
     const hasPct = stats.possible > 0;
     const catPct = hasPct ? (stats.earned / stats.possible) * 100 : null;
 
-    // Safely set title + weight tag
     titleTh.textContent = catName + ' ';
     if (catWeight !== undefined && catWeight > 0) {
       const weightTag = document.createElement('span');
       weightTag.className = 'cgf-inline-weight-tag';
       weightTag.textContent = `Weight: ${catWeight}%`;
       titleTh.appendChild(weightTag);
+    }
+    if (stats.droppedCount > 0) {
+      const dropTag = document.createElement('span');
+      dropTag.className = 'cgf-inline-weight-tag';
+      dropTag.textContent = `Dropped: ${stats.droppedCount}`;
+      titleTh.appendChild(dropTag);
     }
 
     const scoreTd = row.querySelector('td.assignment_score') || row.querySelectorAll('td')[3];
@@ -717,7 +823,6 @@ function updateDisabledTotalsCalculation() {
     }
   });
 
-  // Calculate Overall Course Grade
   let finalPercentage = null;
   let unscaledWeightedPct = null;
   let activeWeightDenominator = 0;
@@ -743,12 +848,11 @@ function updateDisabledTotalsCalculation() {
     });
 
     if (activeWeightDenominator > 0) {
-      // If total weights > 100 (extra credit), divide by 100 (or active base if < 100) so extra credit boosts grade above 100%
       const baseDenominator = totalWeightEntered > 100
         ? Math.min(100, activeWeightDenominator)
         : activeWeightDenominator;
       finalPercentage = (weightedEarned / baseDenominator) * 100;
-      unscaledWeightedPct = weightedEarned; // Raw banked percentage points out of syllabus weights
+      unscaledWeightedPct = weightedEarned;
     }
   } else {
     if (totalPossibleAll > 0) {
@@ -756,7 +860,6 @@ function updateDisabledTotalsCalculation() {
     }
   }
 
-  // Inject or update the Final Total Row at the very bottom of the table
   let finalRow = document.getElementById('cgf-custom-final-row');
   const tbody = document.querySelector('#grades_summary tbody') || document.querySelector('#grades_summary');
   if (!finalRow && tbody) {
@@ -840,16 +943,16 @@ function restoreOriginalSummaryRows() {
   if (customFinal) customFinal.remove();
 }
 
-// 5. Calculate True Final Grade Impact & Inject "Test 100%" Buttons
+// 5. Calculate True Grade Impact Badges (Scaled to Active Weight so they sum to exact points off 100%!)
 function calculateAndInjectBadges() {
-  document.querySelectorAll('.cgf-impact-badge').forEach(el => el.remove());
+  document.querySelectorAll('.cgf-impact-badge, .cgf-dropped-badge, .cgf-whatif-btn').forEach(el => el.remove());
 
-  if (!state.extensionEnabled) {
-    document.querySelectorAll('.cgf-whatif-btn').forEach(el => el.remove());
-    return;
-  }
+  if (!state.extensionEnabled) return;
 
-  // 1) Gather weights from Canvas sidebar OR from user's custom weights
+  const onlyGradedEl = document.getElementById('only_consider_graded_assignments');
+  const onlyGraded = onlyGradedEl ? onlyGradedEl.checked : true;
+  const droppedRows = getDroppedRowsSet(onlyGraded);
+
   const weights = {};
   const weightRows = document.querySelectorAll('aside table.summary tbody tr, #assignments-not-weighted tbody tr');
   weightRows.forEach(tr => {
@@ -878,46 +981,43 @@ function calculateAndInjectBadges() {
 
   const parsedRows = assignmentRows.map(row => {
     const data = parseAssignmentRow(row);
-    if (data.isGraded && !data.isExempt && data.pointsPossible > 0) {
+    const isDropped = droppedRows.has(row);
+    if (!isDropped && data.isGraded && !data.isExempt && data.pointsPossible > 0) {
       totalAllGradedPoints += data.pointsPossible;
       if (data.category) {
         categoryGradedPoints[data.category] = (categoryGradedPoints[data.category] || 0) + data.pointsPossible;
       }
     }
-    return { row, data };
+    return { row, data, isDropped };
   });
 
-  parsedRows.forEach(({ row, data }) => {
+  // Calculate active weight denominator (e.g. 50% when Exam 2 & Final Exam are ungraded)
+  let totalWeightConfigured = 0;
+  let activeWeightDenominator = 0;
+  Object.keys(weights).forEach(cat => {
+    const w = weights[cat] || 0;
+    if (w > 0) {
+      totalWeightConfigured += w;
+      if ((categoryGradedPoints[cat] || 0) > 0) {
+        activeWeightDenominator += w;
+      }
+    }
+  });
+
+  const scaleDenominator = onlyGraded
+    ? (totalWeightConfigured > 100 ? Math.min(100, activeWeightDenominator) : activeWeightDenominator)
+    : (totalWeightConfigured > 0 ? Math.min(100, totalWeightConfigured) : 100);
+
+  parsedRows.forEach(({ row, data, isDropped }) => {
     const titleCell = row.querySelector('th.title');
-    const scoreHolder = row.querySelector('.score_holder');
+    if (!titleCell) return;
 
-    if (data.isImperfectGraded && scoreHolder && !scoreHolder.querySelector('.cgf-whatif-btn')) {
-      const btn = document.createElement('button');
-      btn.className = 'cgf-whatif-btn';
-      btn.type = 'button';
-      btn.title = `Click to test ${data.pointsPossible}/${data.pointsPossible} What-If score`;
-      btn.textContent = `✨ Test ${data.pointsPossible}/${data.pointsPossible}`;
-
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const gradeSpan = row.querySelector('.grade');
-        if (gradeSpan) {
-          gradeSpan.click();
-          setTimeout(() => {
-            const input = row.querySelector('input#student_entered_score, .score_holder input[type="text"]');
-            if (input) {
-              input.value = data.pointsPossible;
-              input.dispatchEvent(new Event('input', { bubbles: true }));
-              input.dispatchEvent(new Event('change', { bubbles: true }));
-              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-              input.blur();
-              setTimeout(refreshAll, 80);
-            }
-          }, 60);
-        }
-      });
-
-      scoreHolder.appendChild(btn);
+    if (isDropped) {
+      const dropBadge = document.createElement('div');
+      dropBadge.className = 'cgf-dropped-badge';
+      dropBadge.textContent = 'Dropped lowest score (excluded from total)';
+      titleCell.appendChild(dropBadge);
+      return;
     }
 
     if (!data.isImperfectGraded) return;
@@ -926,31 +1026,29 @@ function calculateAndInjectBadges() {
     const groupWeight = weights[data.category];
     const totalGroupPts = categoryGradedPoints[data.category];
 
-    if (titleCell) {
-      const badge = document.createElement('div');
-      badge.className = 'cgf-impact-badge';
+    const badge = document.createElement('div');
+    badge.className = 'cgf-impact-badge';
 
-      if (groupWeight && totalGroupPts > 0) {
-        const courseImpact = (pointsLost / totalGroupPts) * groupWeight;
-        badge.textContent = `📉 -${courseImpact.toFixed(2)}% overall grade impact (-${pointsLost} pts)`;
-      } else if (Object.keys(weights).length === 0 && totalAllGradedPoints > 0 && state.calcTotals) {
-        const unweightedImpact = (pointsLost / totalAllGradedPoints) * 100;
-        badge.textContent = `📉 -${unweightedImpact.toFixed(2)}% unweighted impact (-${pointsLost} pts)`;
-      } else {
-        badge.textContent = `📉 -${pointsLost} pts lost`;
-      }
-      titleCell.appendChild(badge);
+    if (groupWeight && totalGroupPts > 0 && scaleDenominator > 0) {
+      // Scaled impact on your displayed course grade (so Midterm = -14.40% and Problem Set 2 = -0.45% -> 85.15%!)
+      const rawSyllabusImpact = (pointsLost / totalGroupPts) * groupWeight;
+      const currentGradeImpact = (rawSyllabusImpact / scaleDenominator) * 100;
+      badge.textContent = `-${currentGradeImpact.toFixed(2)}% overall grade impact (-${pointsLost} pts)`;
+    } else if (Object.keys(weights).length === 0 && totalAllGradedPoints > 0 && state.calcTotals) {
+      const unweightedImpact = (pointsLost / totalAllGradedPoints) * 100;
+      badge.textContent = `-${unweightedImpact.toFixed(2)}% overall grade impact (-${pointsLost} pts)`;
+    } else {
+      badge.textContent = `-${pointsLost} pts lost`;
     }
+    titleCell.appendChild(badge);
   });
 }
 
-// 6. Hide or Dim Rows Based on Active Toggles (Properly handles detail sub-rows in both modes!)
 function applyFilters() {
   const bar = document.getElementById('cgf-control-bar');
   const assignmentRows = getAssignmentRows();
   const summaryRows = getSummaryRows();
 
-  // If master extension toggle is OFF, restore everything to untouched Canvas
   if (!state.extensionEnabled) {
     if (bar) bar.style.display = 'none';
     assignmentRows.forEach(row => {
@@ -1043,7 +1141,6 @@ function refreshAll() {
   applyFilters();
 }
 
-// 7. Validated Sync with Chrome Toolbar Popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (sender && sender.id && sender.id !== chrome.runtime.id) return;
   if (!msg || typeof msg !== 'object') return;
