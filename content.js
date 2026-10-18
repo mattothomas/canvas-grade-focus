@@ -4,9 +4,10 @@ let state = {
   hidePerfect: false,
   hideUngraded: false,
   hideGraded: false,
+  hidePast: false,        // Hides assignments due before today's date
+  showCalculator: false,  // Manually toggles the category weights & auto-drop panel open/closed
   hideTotals: false,
-  dimMode: false,
-  calcTotals: false
+  dimMode: false
 };
 
 const ALLOWED_STATE_KEYS = [
@@ -14,9 +15,10 @@ const ALLOWED_STATE_KEYS = [
   'hidePerfect',
   'hideUngraded',
   'hideGraded',
+  'hidePast',
+  'showCalculator',
   'hideTotals',
-  'dimMode',
-  'calcTotals'
+  'dimMode'
 ];
 
 let isTotalsDisabledByProf = false;
@@ -99,7 +101,6 @@ function saveValidatedSettings() {
   } catch (e) {}
 }
 
-// Automatically load Canvas sidebar weights if user hasn't typed custom ones yet
 function loadCanvasDefaultWeights() {
   const weightRows = document.querySelectorAll('aside table.summary tbody tr, #assignments-not-weighted tbody tr');
   weightRows.forEach(tr => {
@@ -153,6 +154,21 @@ function getSummaryRows() {
     )
   );
   return Array.from(new Set(allRows)).filter(row => isSummaryRow(row));
+}
+
+// Helper: Parse due date text from Canvas row and compare against today (October 17, 2026)
+function isAssignmentPast(row) {
+  const dueCell = row.querySelector('.due');
+  if (!dueCell) return false;
+  const dueText = dueCell.textContent.trim();
+  if (!dueText || dueText.toLowerCase() === 'no due date') return false;
+
+  // Parse Canvas due date format (e.g. "Sep 21 by 11:59pm" or "Oct 4")
+  const parsedDate = new Date(dueText + ', 2026');
+  if (isNaN(parsedDate.getTime())) return false;
+
+  const today = new Date('2026-10-17T23:59:59');
+  return parsedDate < today;
 }
 
 function injectStyles() {
@@ -223,6 +239,16 @@ function injectStyles() {
       border-color: #001e44;
       font-weight: 600;
     }
+    .cgf-pill.cgf-calc-toggle-pill {
+      border-color: #0066cc;
+      color: #004080;
+      background: #eef6ff;
+    }
+    .cgf-pill.cgf-calc-toggle-pill.active {
+      background: #0052a3;
+      color: #ffffff;
+      border-color: #0052a3;
+    }
     .cgf-btn {
       background: #ffffff;
       border: 1px solid #c7cdd1;
@@ -277,7 +303,7 @@ function injectStyles() {
     #cgf-weights-panel {
       border-top: 1px solid #dce1e5;
       padding-top: 10px;
-      display: flex;
+      display: none;
       flex-direction: column;
       gap: 8px;
     }
@@ -427,6 +453,12 @@ function injectControlBar(gradesTable) {
         <label class="cgf-pill" id="pill-hideGraded" title="To-Do Mode: Shows ONLY ungraded assignments">
           <input type="checkbox" id="cb-hideGraded"> To-Do Only (Hide Graded)
         </label>
+        <label class="cgf-pill" id="pill-hidePast" title="Hides any assignments due before today's date">
+          <input type="checkbox" id="cb-hidePast"> Hide Past Assignments
+        </label>
+        <label class="cgf-pill cgf-calc-toggle-pill" id="pill-showCalculator" title="Open or close the category weights and auto-drop calculation panel">
+          <input type="checkbox" id="cb-showCalculator"> Show Grade Calculator
+        </label>
         <label class="cgf-pill" id="pill-hideTotals" title="Separately hide or show the category and final grade totals at the bottom">
           <input type="checkbox" id="cb-hideTotals"> Hide Bottom Totals
         </label>
@@ -449,7 +481,7 @@ function injectControlBar(gradesTable) {
 
   gradesTable.parentNode.insertBefore(bar, gradesTable);
 
-  const keys = ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode'];
+  const keys = ['hidePerfect', 'hideUngraded', 'hideGraded', 'hidePast', 'showCalculator', 'hideTotals', 'dimMode'];
   keys.forEach(key => {
     const cb = document.getElementById(`cb-${key}`);
     if (!cb) return;
@@ -819,13 +851,11 @@ function calculateGradeForScenario(scenarioType, onlyGraded, droppedRows) {
 
 function updateCalculatedTotals() {
   const weightsPanel = document.getElementById('cgf-weights-panel');
-  if (!state.extensionEnabled) {
+  if (!state.extensionEnabled || !state.showCalculator) {
     if (weightsPanel) weightsPanel.style.display = 'none';
-    restoreOriginalSummaryRows();
-    return;
+  } else {
+    if (weightsPanel) weightsPanel.style.display = 'flex';
   }
-
-  if (weightsPanel) weightsPanel.style.display = 'flex';
 
   const onlyGradedEl = document.getElementById('only_consider_graded_assignments');
   const onlyGraded = onlyGradedEl ? onlyGradedEl.checked : true;
@@ -997,7 +1027,6 @@ function updateCalculatedTotals() {
           currentWeightedBanked += catRatio * w;
         }
         
-        // FIXED: Only count category toward remaining weight if it has actual ungraded assignments left to take!
         const hasActiveUngraded = getAssignmentRows().some(r => {
           const d = parseAssignmentRow(r);
           return d.category === cat && d.isUngraded && !droppedRows.has(r);
@@ -1206,6 +1235,9 @@ function applyFilters() {
     if (state.hideGraded && (data.isGraded || data.isExempt || data.isZeroPoints)) {
       shouldFilter = true;
     }
+    if (state.hidePast && isAssignmentPast(row)) {
+      shouldFilter = true;
+    }
 
     row.classList.remove('cgf-hidden-row', 'cgf-dimmed-row');
 
@@ -1246,7 +1278,7 @@ function applyFilters() {
 }
 
 function syncUI() {
-  ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode'].forEach(key => {
+  ['hidePerfect', 'hideUngraded', 'hideGraded', 'hidePast', 'showCalculator', 'hideTotals', 'dimMode'].forEach(key => {
     const cb = document.getElementById(`cb-${key}`);
     const pill = document.getElementById(`pill-${key}`);
     if (cb && pill) {
