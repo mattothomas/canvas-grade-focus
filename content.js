@@ -23,7 +23,7 @@ let isTotalsDisabledByProf = false;
 let courseId = 'default';
 let customWeights = {};
 let customDrops = {};
-let targetGradeValue = 90; // Default target
+let targetGradeValue = 90;
 let lastScoreSignature = '';
 
 function initGradeFocus() {
@@ -35,6 +35,7 @@ function initGradeFocus() {
 
   loadValidatedSettings();
   detectDisabledTotals();
+  loadCanvasDefaultWeights();
 
   injectStyles();
   injectControlBar(gradesTable);
@@ -96,6 +97,24 @@ function saveValidatedSettings() {
     localStorage.setItem(`cgf_drops_${courseId}`, JSON.stringify(customDrops));
     localStorage.setItem(`cgf_target_${courseId}`, String(targetGradeValue));
   } catch (e) {}
+}
+
+// Automatically load Canvas sidebar weights if user hasn't typed custom ones yet
+function loadCanvasDefaultWeights() {
+  const weightRows = document.querySelectorAll('aside table.summary tbody tr, #assignments-not-weighted tbody tr');
+  weightRows.forEach(tr => {
+    const th = tr.querySelector('th');
+    const td = tr.querySelector('td');
+    if (th && td) {
+      const groupName = th.textContent.trim();
+      const weightVal = parseFloat(td.textContent.replace('%', '').trim());
+      if (groupName && groupName.toLowerCase() !== 'total' && !isNaN(weightVal)) {
+        if (customWeights[groupName] === undefined) {
+          customWeights[groupName] = weightVal;
+        }
+      }
+    }
+  });
 }
 
 function detectDisabledTotals() {
@@ -204,16 +223,6 @@ function injectStyles() {
       border-color: #001e44;
       font-weight: 600;
     }
-    .cgf-pill.cgf-calc-pill {
-      border-color: #0066cc;
-      color: #004080;
-      background: #eef6ff;
-    }
-    .cgf-pill.cgf-calc-pill.active {
-      background: #0052a3;
-      color: #ffffff;
-      border-color: #0052a3;
-    }
     .cgf-btn {
       background: #ffffff;
       border: 1px solid #c7cdd1;
@@ -268,7 +277,7 @@ function injectStyles() {
     #cgf-weights-panel {
       border-top: 1px solid #dce1e5;
       padding-top: 10px;
-      display: none;
+      display: flex;
       flex-direction: column;
       gap: 8px;
     }
@@ -402,12 +411,6 @@ function injectControlBar(gradesTable) {
   const bar = document.createElement('div');
   bar.id = 'cgf-control-bar';
 
-  const calcPillHTML = isTotalsDisabledByProf
-    ? `<label class="cgf-pill cgf-calc-pill" id="pill-calcTotals" title="Professor disabled grade totals. Click to calculate category and final totals.">
-         <input type="checkbox" id="cb-calcTotals"> Calculate Disabled Totals
-       </label>`
-    : '';
-
   bar.innerHTML = `
     <div class="cgf-top-row">
       <div class="cgf-title">
@@ -430,7 +433,6 @@ function injectControlBar(gradesTable) {
         <label class="cgf-pill" id="pill-dimMode" title="Fade filtered rows to 15% opacity instead of removing them">
           <input type="checkbox" id="cb-dimMode"> Dim Instead of Hide
         </label>
-        ${calcPillHTML}
         <button class="cgf-btn" id="cgf-reset-whatif" title="Revert any tested What-If scores back to official grades">
           Reset What-Ifs
         </button>
@@ -438,7 +440,7 @@ function injectControlBar(gradesTable) {
     </div>
     <div id="cgf-weights-panel">
       <div class="cgf-weights-header">
-        <span>Category Weights % & Auto-Drop Lowest Scores (Auto-saved for this class — leave weights at 0% for unweighted points):</span>
+        <span>Category Weights % & Auto-Drop Lowest Scores (Auto-saved for this class):</span>
         <span id="cgf-weights-sum-status" class="cgf-weight-note"></span>
       </div>
       <div class="cgf-weights-grid" id="cgf-weights-grid"></div>
@@ -447,7 +449,7 @@ function injectControlBar(gradesTable) {
 
   gradesTable.parentNode.insertBefore(bar, gradesTable);
 
-  const keys = ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode', 'calcTotals'];
+  const keys = ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode'];
   keys.forEach(key => {
     const cb = document.getElementById(`cb-${key}`);
     if (!cb) return;
@@ -537,7 +539,7 @@ function buildWeightsEditor() {
         customWeights[cat] = Math.min(val, 1000);
       }
       saveValidatedSettings();
-      updateDisabledTotalsCalculation();
+      updateCalculatedTotals();
       calculateAndInjectBadges();
     });
 
@@ -550,7 +552,7 @@ function buildWeightsEditor() {
         customDrops[cat] = Math.min(val, 99);
       }
       saveValidatedSettings();
-      updateDisabledTotalsCalculation();
+      updateCalculatedTotals();
       calculateAndInjectBadges();
     });
 
@@ -602,7 +604,7 @@ function setupWhatIfListeners(gradesTable) {
     const currentSig = getCurrentScoreSignature();
     if (currentSig !== lastScoreSignature) {
       lastScoreSignature = currentSig;
-      updateDisabledTotalsCalculation();
+      updateCalculatedTotals();
       calculateAndInjectBadges();
       applyFilters();
     }
@@ -700,9 +702,8 @@ function parseAssignmentRow(row) {
 
 function getDroppedRowsSet(onlyGraded) {
   const droppedRows = new Set();
-  if (!isTotalsDisabledByProf || !state.calcTotals) return droppedRows;
-
   const byCat = {};
+
   getAssignmentRows().forEach(row => {
     const data = parseAssignmentRow(row);
     if (!data.category || data.isExempt || !(data.pointsPossible > 0)) return;
@@ -816,9 +817,9 @@ function calculateGradeForScenario(scenarioType, onlyGraded, droppedRows) {
   return { finalPercentage, totalEarnedAll, totalPossibleAll, catTotals };
 }
 
-function updateDisabledTotalsCalculation() {
+function updateCalculatedTotals() {
   const weightsPanel = document.getElementById('cgf-weights-panel');
-  if (!state.extensionEnabled || !isTotalsDisabledByProf || !state.calcTotals) {
+  if (!state.extensionEnabled) {
     if (weightsPanel) weightsPanel.style.display = 'none';
     restoreOriginalSummaryRows();
     return;
@@ -959,7 +960,6 @@ function updateDisabledTotalsCalculation() {
       th.appendChild(overNote);
     }
 
-    // Min / Max projection sub-line
     const minMaxDiv = document.createElement('div');
     minMaxDiv.className = 'cgf-minmax-row';
     const maxValStr = maxRes.finalPercentage !== null ? `${maxRes.finalPercentage.toFixed(2)}%` : 'N/A';
@@ -967,7 +967,6 @@ function updateDisabledTotalsCalculation() {
     minMaxDiv.innerHTML = `<span>Max Possible Grade: <strong>${maxValStr}</strong> (assuming 100% on remaining)</span><span>Min Possible Grade: <strong>${minValStr}</strong> (assuming 0% on remaining)</span>`;
     th.appendChild(minMaxDiv);
 
-    // Target Grade Calculator Row
     const targetDiv = document.createElement('div');
     targetDiv.className = 'cgf-target-row';
 
@@ -986,7 +985,6 @@ function updateDisabledTotalsCalculation() {
     targetResultSpan.style.marginLeft = '6px';
     targetResultSpan.style.fontWeight = '600';
 
-    // Calculate required score on remaining ungraded categories to hit target
     if (totalWeightEntered > 0) {
       let currentWeightedBanked = 0;
       let remainingWeightTotal = 0;
@@ -998,12 +996,14 @@ function updateDisabledTotalsCalculation() {
           const catRatio = st.earned / st.possible;
           currentWeightedBanked += catRatio * w;
         }
-        // Check if category has ungraded assignments or 0 possible points
-        const hasUngraded = getAssignmentRows().some(r => {
+        
+        // FIXED: Only count category toward remaining weight if it has actual ungraded assignments left to take!
+        const hasActiveUngraded = getAssignmentRows().some(r => {
           const d = parseAssignmentRow(r);
           return d.category === cat && d.isUngraded && !droppedRows.has(r);
         });
-        if (w > 0 && (hasUngraded || st.possible === 0)) {
+
+        if (w > 0 && hasActiveUngraded) {
           remainingWeightTotal += w;
         }
       });
@@ -1021,7 +1021,7 @@ function updateDisabledTotalsCalculation() {
         targetResultSpan.textContent = `-> You need an average of ${requiredRemainingPct.toFixed(2)}% across remaining ungraded categories (${remainingWeightTotal}% weight) to hit your target.`;
       }
     } else {
-      targetResultSpan.textContent = `(Enable weighted category percentages above to use target calculator)`;
+      targetResultSpan.textContent = `(Enter category weights above to use target calculator)`;
     }
 
     targetInput.addEventListener('input', (e) => {
@@ -1029,7 +1029,7 @@ function updateDisabledTotalsCalculation() {
       if (Number.isFinite(val)) {
         targetGradeValue = val;
         saveValidatedSettings();
-        updateDisabledTotalsCalculation();
+        updateCalculatedTotals();
       }
     });
 
@@ -1094,13 +1094,11 @@ function calculateAndInjectBadges() {
     }
   });
 
-  if (isTotalsDisabledByProf && state.calcTotals) {
-    Object.keys(customWeights).forEach(cat => {
-      if (customWeights[cat] > 0) {
-        weights[cat] = customWeights[cat];
-      }
-    });
-  }
+  Object.keys(customWeights).forEach(cat => {
+    if (customWeights[cat] > 0) {
+      weights[cat] = customWeights[cat];
+    }
+  });
 
   const assignmentRows = getAssignmentRows();
   const categoryGradedPoints = {};
@@ -1159,7 +1157,7 @@ function calculateAndInjectBadges() {
       const rawSyllabusImpact = (pointsLost / totalGroupPts) * groupWeight;
       const currentGradeImpact = (rawSyllabusImpact / scaleDenominator) * 100;
       badge.textContent = `-${currentGradeImpact.toFixed(2)}% overall grade impact (-${pointsLost} pts)`;
-    } else if (Object.keys(weights).length === 0 && totalAllGradedPoints > 0 && state.calcTotals) {
+    } else if (Object.keys(weights).length === 0 && totalAllGradedPoints > 0) {
       const unweightedImpact = (pointsLost / totalAllGradedPoints) * 100;
       badge.textContent = `-${unweightedImpact.toFixed(2)}% overall grade impact (-${pointsLost} pts)`;
     } else {
@@ -1248,7 +1246,7 @@ function applyFilters() {
 }
 
 function syncUI() {
-  ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode', 'calcTotals'].forEach(key => {
+  ['hidePerfect', 'hideUngraded', 'hideGraded', 'hideTotals', 'dimMode'].forEach(key => {
     const cb = document.getElementById(`cb-${key}`);
     const pill = document.getElementById(`pill-${key}`);
     if (cb && pill) {
@@ -1261,7 +1259,7 @@ function syncUI() {
 function refreshAll() {
   lastScoreSignature = getCurrentScoreSignature();
   syncUI();
-  updateDisabledTotalsCalculation();
+  updateCalculatedTotals();
   calculateAndInjectBadges();
   applyFilters();
 }
