@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 275px;
+      width: 265px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       margin: 0;
       padding: 14px;
@@ -12,24 +12,58 @@
       color: #2d3b45;
     }
     h3 {
-      margin: 0 0 10px 0;
-      font-size: 15px;
+      margin: 0 0 12px 0;
+      font-size: 14px;
       color: #001e44;
       border-bottom: 2px solid #001e44;
       padding-bottom: 6px;
+      text-align: center;
     }
-    .master-toggle {
+    /* Big centered ON/OFF slider switch with no text next to it */
+    .master-slider-wrap {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: #001e44;
-      color: #ffffff;
-      padding: 9px 12px;
-      border-radius: 6px;
-      margin-bottom: 12px;
-      font-size: 13px;
-      font-weight: 700;
+      justify-content: center;
+      margin-bottom: 14px;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 68px;
+      height: 34px;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
       cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #cbd5e1;
+      transition: 0.25s;
+      border-radius: 34px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 26px;
+      width: 26px;
+      left: 4px;
+      bottom: 4px;
+      background-color: #ffffff;
+      transition: 0.25s;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+    input:checked + .slider {
+      background-color: #001e44;
+    }
+    input:checked + .slider:before {
+      transform: translateX(34px);
     }
     .toggle-row {
       display: flex;
@@ -66,18 +100,19 @@
   </style>
 </head>
 <body>
-  <h3>🎯 PSU Canvas Grade Focus</h3>
+  <h3>PSU Canvas Grade Focus</h3>
 
-  <!-- Master Toggle to turn the entire extension UI on or off -->
-  <label class="master-toggle">
-    <span>⚡ Enable Grade Focus UI</span>
-    <input type="checkbox" id="pop-extensionEnabled" checked>
-  </label>
+  <!-- Big Master ON/OFF Slider (No text next to it) -->
+  <div class="master-slider-wrap">
+    <label class="switch" title="Turn Grade Focus ON or OFF">
+      <input type="checkbox" id="pop-extensionEnabled" checked>
+      <span class="slider"></span>
+    </label>
+  </div>
 
   <div id="sub-toggles">
-    <!-- Only appears on classes where the professor disabled grade calculation -->
     <label class="toggle-row calc-row" id="row-calcTotals">
-      <span>🧮 Calculate Disabled Totals</span>
+      <span>Calculate Disabled Totals</span>
       <input type="checkbox" id="pop-calcTotals">
     </label>
 
@@ -107,7 +142,7 @@
     </label>
   </div>
 
-  <div class="note" id="status-note">Weights auto-save per class.</div>
+  <div class="note" id="status-note">Weights & drops auto-save per class.</div>
 
   <script src="popup.js"></script>
 </body>
